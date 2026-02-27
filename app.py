@@ -7,7 +7,7 @@ import os
 st.title("人カウンター")
 st.write("verson2")
 
-model = YOLO('yolov8n.pt')
+model = YOLO('yolov8s.pt')
 uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
 
 if uploaded_file is not None:
@@ -76,4 +76,5 @@ if uploaded_file is not None:
     with open(save_path, "rb") as f:
         st.download_button("解析済み動画をダウンロード", f, "analyzed_video.mp4")
     
+
     os.remove(temp_path)
