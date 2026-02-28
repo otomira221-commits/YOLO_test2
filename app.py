@@ -3,11 +3,18 @@ from ultralytics import YOLO
 import cv2
 import tempfile
 import os
-
+# アプリが起動するたびにキャッシュをクリアして、エラーを防ぐ
+st.cache_data.clear()
+st.cache_resource.clear()
 st.title("人カウンター")
 st.write("verson2")
 
-model = YOLO('yolov8s.pt')
+# モデルを一度だけ読み込んで使い回す（メモリ節約） ---
+@st.cache_resource
+def load_model():
+    return YOLO('yolov8s.pt')
+
+model = load_model()
 uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
 
 if uploaded_file is not None:
@@ -78,3 +85,4 @@ if uploaded_file is not None:
     
 
     os.remove(temp_path)
+
