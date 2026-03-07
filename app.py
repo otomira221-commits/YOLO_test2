@@ -4,128 +4,141 @@ import cv2
 import tempfile
 import os
 
-st.title("物体カウンター")
-st.write("verson5 - 超高速化＆グラフ分析機能つき")
+st.title("マルチ物体カウンター")
+st.write("verson7 - 全フレーム滑らか解析＆進捗バーつき")
 
-# モデルを一度だけ読み込んで使い回す
 @st.cache_resource
 def load_model():
     return YOLO('yolov8s.pt')
 
 model = load_model()
 
-# --- カウントする対象を選ぶUI ---
 class_names_dict = model.names
 class_names_list = list(class_names_dict.values())
-selected_class_name = st.selectbox("カウントする対象を選んでください", class_names_list, index=0)
-selected_class_id = list(class_names_dict.keys())[list(class_names_dict.values()).index(selected_class_name)]
 
-uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
+selected_class_names = st.multiselect(
+    "カウントする対象を選んでください（複数選択可）", 
+    class_names_list, 
+    default=["person", "car"]
+)
 
-if uploaded_file is not None:
-    st.write(f"⏳ 「{selected_class_name}」を解析中...")
-    
-    temp_path = ""
-    save_path = ""
-    
-    try:
-        # 一時ファイルの作成
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tfile:
-            tfile.write(uploaded_file.read())
-            temp_path = tfile.name
-        
-        save_path = temp_path.replace(".mp4", "_output.mp4")
-        
-        cap = cv2.VideoCapture(temp_path)
-        
-        if not cap.isOpened():
-             st.error("エラー：動画ファイルの読み込みに失敗しました。")
-        else:
-            # 動画の情報を取得
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-            out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+if not selected_class_names:
+    st.warning("⚠️ 少なくとも1つの対象を選んでください！")
+else:
+    selected_class_ids = [list(class_names_dict.keys())[list(class_names_dict.values()).index(name)] for name in selected_class_names]
 
-            # --- UIの空箱を準備 ---
-            metric_placeholder = st.empty() 
-            chart_placeholder = st.empty()  
-            stframe = st.empty()            
+    uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
+
+    if uploaded_file is not None:
+        st.write(f"⏳ {', '.join(selected_class_names)} を解析中...")
+        
+        temp_path = ""
+        save_path = ""
+        
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tfile:
+                tfile.write(uploaded_file.read())
+                temp_path = tfile.name
             
-            # --- 解析用の変数 ---
-            max_target = 0
-            counts_history = [] 
-            frame_count = 0
-            last_count = 0 # 最後に検知した数を覚えておく変数
-
-            # 動画のフレームを1枚ずつ読み込むループ
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                    
-                frame_count += 1
-                res_frame = frame.copy() # 描画用のフレームを準備
+            save_path = temp_path.replace(".mp4", "_output.mp4")
+            cap = cv2.VideoCapture(temp_path)
+            
+            if not cap.isOpened():
+                 st.error("エラー：動画ファイルの読み込みに失敗しました。")
+            else:
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                fps = int(cap.get(cv2.CAP_PROP_FPS))
                 
-                # 【高速化の要】1秒に1回（または最初のフレーム）だけAIを動かす
-                if frame_count % fps == 0 or frame_count == 1:
+                # 【追加】動画の全フレーム数を取得（進捗バーの計算用）
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
+                out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+
+                # --- UIの空箱 ---
+                # 【追加】進捗バーと、処理状況のテキスト用の箱
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                metrics_container = st.empty()
+                chart_placeholder = st.empty()  
+                stframe = st.empty()            
+                
+                counts_history = {name: [] for name in selected_class_names}
+                
+                frame_count = 0
+                current_counts = {name: 0 for name in selected_class_names}
+
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                        
+                    frame_count += 1
+                    
+                    # 【変更】スキップせず、全フレームでAIを動かす！
                     results = model(frame)
                     
                     if results[0].boxes is not None:
                         classes = results[0].boxes.cls.cpu().numpy()
-                        last_count = (classes == selected_class_id).sum()
+                        for name, cls_id in zip(selected_class_names, selected_class_ids):
+                            current_counts[name] = int((classes == cls_id).sum())
                     else:
-                        last_count = 0
-                    
-                    if last_count > max_target:
-                        max_target = last_count
+                        for name in selected_class_names:
+                            current_counts[name] = 0
 
-                    # AIが動いたタイミングでグラフと数値を更新
-                    counts_history.append(last_count)
-                    chart_placeholder.line_chart(counts_history)
-                    metric_placeholder.metric(label=f"現在の {selected_class_name} 検知数", value=f"{last_count}")
+                    for name in selected_class_names:
+                        counts_history[name].append(current_counts[name])
                     
-                    # バウンディングボックス（緑の枠）を描画
+                    # 【追加】進捗バーとテキストを更新する
+                    progress_ratio = min(frame_count / total_frames, 1.0)
+                    progress_bar.progress(progress_ratio)
+                    status_text.text(f"処理中... {frame_count} / {total_frames} フレーム完了")
+
+                    # 画面の描画更新（ブラウザが重くなりすぎる場合は、グラフや画像の更新頻度を下げることもあります）
+                    chart_placeholder.line_chart(counts_history)
+                    
+                    with metrics_container.container():
+                        cols = st.columns(len(selected_class_names))
+                        for i, name in enumerate(selected_class_names):
+                            cols[i].metric(label=f"{name} の数", value=current_counts[name])
+                    
                     res_frame = results[0].plot()
                     
-                    # 画面の映像も1秒に1回だけ更新する（ブラウザが重くなるのを防ぐため）
+                    # 画面上の映像を更新
                     display_frame = cv2.cvtColor(res_frame, cv2.COLOR_BGR2RGB)
                     stframe.image(display_frame, channels="RGB", use_container_width=True)
 
-                # 左上の文字は全フレームに書き込む（動画がカクカクしないように）
-                cv2.putText(res_frame, f"{selected_class_name}: {last_count}", (50, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
-
-                # 出力用動画には全フレーム書き込む
-                out.write(res_frame)
-                    
-            cap.release()
-            out.release()
-            
-            st.success(f"解析完了！ この動画での最大同時検知数（{selected_class_name}）は {max_target} でした。")
-
-            with open(save_path, "rb") as f:
-                video_bytes = f.read()
+                    out.write(res_frame)
+                        
+                cap.release()
+                out.release()
                 
-            st.download_button(
-                label="解析済み動画をダウンロード", 
-                data=video_bytes, 
-                file_name=f"analyzed_{selected_class_name}.mp4",
-                mime="video/mp4"
-            )
+                # 処理完了時に進捗バーを100%にしてメッセージを更新
+                progress_bar.progress(1.0)
+                status_text.text("処理が完了しました！")
+                st.success("解析完了！")
 
-    except Exception as e:
-        st.error(f"解析中にエラーが発生しました。\n詳細: {e}")
+                with open(save_path, "rb") as f:
+                    video_bytes = f.read()
+                    
+                st.download_button(
+                    label="解析済み動画をダウンロード", 
+                    data=video_bytes, 
+                    file_name="analyzed_smooth_multi.mp4",
+                    mime="video/mp4"
+                )
 
-    finally:
-        # お片付け処理
-        if 'cap' in locals() and cap.isOpened():
-            cap.release()
-        if 'out' in locals():
-            out.release()
-        
-        if temp_path and os.path.exists(temp_path):
-            os.remove(temp_path)
-        if save_path and os.path.exists(save_path):
-            os.remove(save_path)
+        except Exception as e:
+            st.error(f"解析中にエラーが発生しました。\n詳細: {e}")
+
+        finally:
+            if 'cap' in locals() and cap.isOpened():
+                cap.release()
+            if 'out' in locals():
+                out.release()
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+            if save_path and os.path.exists(save_path):
+                os.remove(save_path)
