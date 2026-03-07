@@ -3,11 +3,10 @@ from ultralytics import YOLO
 import cv2
 import tempfile
 import os
+import pandas as pd
+import plotly.express as px
 
-# 【新機能1】ページ全体の設定（一番最初に書く必要があります）
-# layout="wide" にすることで、画面の横幅を広く使えます
 st.set_page_config(page_title="マルチ物体カウンター", layout="wide")
-
 st.title("マルチ物体カウンター")
 
 @st.cache_resource
@@ -19,10 +18,9 @@ model = load_model()
 class_names_dict = model.names
 class_names_list = list(class_names_dict.values())
 
-# --- 【新機能2】サイドバー（左側のメニュー）に設定項目をまとめる ---
 with st.sidebar:
     st.header("⚙️ 設定パネル")
-    st.write("verson8 - UIレイアウト改善版")
+    st.write("verson9 - Plotlyインタラクティブグラフ版")
     
     selected_class_names = st.multiselect(
         "カウントする対象（複数選択可）", 
@@ -31,7 +29,6 @@ with st.sidebar:
     )
     
     uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
-# -------------------------------------------------------------
 
 if not selected_class_names:
     st.warning("⚠️ サイドバーから少なくとも1つの対象を選んでください！")
@@ -41,18 +38,15 @@ else:
     if uploaded_file is not None:
         st.write(f"⏳ {', '.join(selected_class_names)} を解析中...")
         
-        # 常に表示しておきたい数字（メトリクス）用の箱は一番上に用意
         metrics_container = st.empty()
         
-        # --- 【新機能3】タブを使って画面を分割する ---
         tab1, tab2 = st.tabs(["🎥 リアルタイム映像", "📊 データ推移グラフ"])
         
         with tab1:
-            stframe = st.empty() # 映像はタブ1に表示
+            stframe = st.empty() 
             
         with tab2:
-            chart_placeholder = st.empty() # グラフはタブ2に表示
-        # ----------------------------------------------
+            chart_placeholder = st.empty() 
         
         progress_bar = st.progress(0)
         status_text = st.empty()
@@ -76,8 +70,13 @@ else:
                 fps = int(cap.get(cv2.CAP_PROP_FPS))
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 
+                # 0fpsエラーを防ぐための安全対策
+                safe_fps = max(1, fps)
+                # グラフを更新する頻度（0.5秒に1回）
+                chart_update_freq = max(1, int(safe_fps / 2)) 
+                
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
-                out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
+                out = cv2.VideoWriter(save_path, fourcc, safe_fps, (width, height))
 
                 counts_history = {name: [] for name in selected_class_names}
                 frame_count = 0
@@ -107,10 +106,23 @@ else:
                     progress_bar.progress(progress_ratio)
                     status_text.text(f"処理中... {frame_count} / {total_frames} フレーム完了")
 
-                    # タブ2の中にあるグラフを更新
-                    chart_placeholder.line_chart(counts_history)
+                    # --- 【新機能】Plotlyを使ったリッチなグラフの描画 ---
+                    # 毎フレーム更新すると重いので、一定間隔 または 最後のフレームだけ更新する
+                    if frame_count % chart_update_freq == 0 or frame_count == total_frames:
+                        df = pd.DataFrame(counts_history)
+                        # Plotly Expressで折れ線グラフを作成
+                        fig = px.line(
+                            df, 
+                            title="リアルタイム検知数の推移",
+                            labels={"index": "フレーム数", "value": "検知された数", "variable": "対象の種類"}
+                        )
+                        # グラフの余白を調整してスッキリ見せる
+                        fig.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+                        
+                        # st.line_chart の代わりに st.plotly_chart を使う
+                        chart_placeholder.plotly_chart(fig, use_container_width=True)
+                    # -----------------------------------------------------
                     
-                    # 画面上部にある数字を更新
                     with metrics_container.container():
                         cols = st.columns(len(selected_class_names))
                         for i, name in enumerate(selected_class_names):
@@ -119,9 +131,7 @@ else:
                     res_frame = results[0].plot()
                     display_frame = cv2.cvtColor(res_frame, cv2.COLOR_BGR2RGB)
                     
-                    # タブ1の中にある映像を更新
                     stframe.image(display_frame, channels="RGB", use_container_width=True)
-
                     out.write(res_frame)
                         
                 cap.release()
@@ -137,7 +147,7 @@ else:
                 st.download_button(
                     label="解析済み動画をダウンロード", 
                     data=video_bytes, 
-                    file_name="analyzed_smooth_multi.mp4",
+                    file_name="analyzed_plotly_multi.mp4",
                     mime="video/mp4"
                 )
 
