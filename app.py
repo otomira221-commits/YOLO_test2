@@ -4,28 +4,20 @@ import cv2
 import tempfile
 import os
 
-st.title("物体カウンター") # タイトルも少し汎用的に変更
-st.write("verson3 - クラス選択機能つき")
+st.title("物体カウンター")
+st.write("verson4 - リアルタイムグラフ分析機能つき")
 
-# モデルを一度だけ読み込んで使い回す
 @st.cache_resource
 def load_model():
     return YOLO('yolov8s.pt')
 
 model = load_model()
 
-# --- 【新機能】カウントする対象を選ぶUIを追加 ---
-# YOLOモデルが知っている80種類の名前リストを取得
-class_names_dict = model.names  # {0: 'person', 1: 'bicycle', ...} という辞書
-class_names_list = list(class_names_dict.values()) # ['person', 'bicycle', ...] というリストに変換
+class_names_dict = model.names
+class_names_list = list(class_names_dict.values())
 
-# プルダウンメニューを表示（デフォルトは index=0 つまり 'person' に設定）
 selected_class_name = st.selectbox("カウントする対象を選んでください", class_names_list, index=0)
-
-# 選ばれた名前から、クラスIDを逆引きして取得する
-# 例：'car' が選ばれたら、IDの 2 を取得する
 selected_class_id = list(class_names_dict.keys())[list(class_names_dict.values()).index(selected_class_name)]
-# ----------------------------------------------
 
 uploaded_file = st.file_uploader("動画をアップロード", type=["mp4", "mov", "avi"])
 
@@ -53,9 +45,14 @@ if uploaded_file is not None:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
             out = cv2.VideoWriter(save_path, fourcc, fps, (width, height))
 
-            metric_placeholder = st.empty()
-            stframe = st.empty()
-            max_target = 0 
+            # --- UIの準備（空箱の配置） ---
+            metric_placeholder = st.empty() # 数値用
+            chart_placeholder = st.empty()  # 【新機能】グラフ用
+            stframe = st.empty()            # 動画用
+            
+            max_target = 0
+            # 【新機能】フレームごとの検知数を記録するリスト
+            counts_history = [] 
 
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -64,24 +61,28 @@ if uploaded_file is not None:
                     
                 results = model(frame)
                 
-                # --- 【変更点】選んだクラスIDを数えるようにする ---
                 target_count = 0
                 if results[0].boxes is not None:
                     classes = results[0].boxes.cls.cpu().numpy()
-                    # 前は == 0 だった部分を、選んだID (selected_class_id) に変更
                     target_count = (classes == selected_class_id).sum()
                 
                 if target_count > max_target:
                     max_target = target_count
 
+                # 【新機能】現在のカウント数を履歴リストの最後に追加
+                counts_history.append(target_count)
+
                 res_frame = results[0].plot()
-                
-                # 画面に書き込む文字も「Count」に変更
                 cv2.putText(res_frame, f"{selected_class_name}: {target_count}", (50, 50), 
                             cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
 
                 out.write(res_frame)
+                
+                # --- UIの更新 ---
                 metric_placeholder.metric(label=f"現在の {selected_class_name} 検知数", value=f"{target_count}")
+                
+                # 【新機能】履歴リストを使って折れ線グラフを更新
+                chart_placeholder.line_chart(counts_history)
                 
                 display_frame = cv2.cvtColor(res_frame, cv2.COLOR_BGR2RGB)
                 stframe.image(display_frame, channels="RGB", use_container_width=True)
