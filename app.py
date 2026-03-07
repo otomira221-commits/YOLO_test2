@@ -53,30 +53,53 @@ if uploaded_file is not None:
             max_target = 0
             # 【新機能】フレームごとの検知数を記録するリスト
             counts_history = [] 
-
+            # 【追加1】フレームを数えるカウンターと、最新の描画結果を覚えておく箱を用意
+            frame_count = 0
+            current_res_frame = None
+            
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
+               # フレームを1つ読み込むごとにカウントアップ
+                frame_count += 1
+                
+                # 【追加2】「1秒ごと（fpsで割り切れるフレーム数）」の時だけAIを動かす
+                if frame_count % fps == 0:
                     
-                results = model(frame)
-                
-                target_count = 0
-                if results[0].boxes is not None:
-                    classes = results[0].boxes.cls.cpu().numpy()
-                    target_count = (classes == selected_class_id).sum()
-                
-                if target_count > max_target:
-                    max_target = target_count
+                # --- ここから下のAI推論は、1秒に1回しか実行されない ---
+                    results = model(frame)
+                    
+                    target_count = 0
+                    if results[0].boxes is not None:
+                        classes = results[0].boxes.cls.cpu().numpy()
+                        target_count = (classes == selected_class_id).sum()
+                    
+                    if target_count > max_target:
+                        max_target = target_count
 
-                # 【新機能】現在のカウント数を履歴リストの最後に追加
-                counts_history.append(target_count)
+                    counts_history.append(target_count)
+                    
+                    # 変数名を res_frame から current_res_frame に変更
+                    current_res_frame = results[0].plot()
+                    cv2.putText(current_res_frame, f"{selected_class_name}: {target_count}", (50, 50), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
 
-                res_frame = results[0].plot()
-                cv2.putText(res_frame, f"{selected_class_name}: {target_count}", (50, 50), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+                    # UIの更新も1秒に1回だけ行う
+                    metric_placeholder.metric(label=f"現在の {selected_class_name} 検知数", value=f"{target_count}")
+                    chart_placeholder.line_chart(counts_history)
+                    
+                    display_frame = cv2.cvtColor(current_res_frame, cv2.COLOR_BGR2RGB)
+                    stframe.image(display_frame, channels="RGB", use_container_width=True)
+                    # --------------------------------------------------------
 
-                out.write(res_frame)
+                # 【追加3】出力用動画の保存処理（これは毎フレーム必ず行う！）
+                # もしすでにAIが描画した画像(current_res_frame)があれば、それを書き込む
+                # なければ、AIがまだ動いていない最初の1秒間なので、元の動画のフレームをそのまま書き込む
+                if current_res_frame is not None:
+                    out.write(current_res_frame)
+                else:
+                    out.write(frame)
                 
                 # --- UIの更新 ---
                 metric_placeholder.metric(label=f"現在の {selected_class_name} 検知数", value=f"{target_count}")
@@ -115,3 +138,4 @@ if uploaded_file is not None:
             os.remove(temp_path)
         if save_path and os.path.exists(save_path):
             os.remove(save_path)
+
